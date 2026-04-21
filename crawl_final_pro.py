@@ -504,6 +504,7 @@ def main():
             logger.info(f"📂 所有文件已保存到: {OUTPUT_DIR}/")
             logger.info(f"   - 用户信息文件: user_info.json")
             logger.info(f"   - 完整汇总文件: weibos_all.json")
+            logger.info(f"   - 纯文本内容文件: weibos_content.txt")
             if (batch_num -1) > 0:
                 logger.info(f"   - 批次文件: weibos_batch_001.json ~ weibos_batch_{(batch_num-1):03d}.json")
             logger.info(f"   - 进度记录文件: crawled_ids.txt（用于断点续爬）")
@@ -520,8 +521,18 @@ def main():
             # 中断时保存剩余内容
             if current_batch:
                 save_batch(current_batch, OUTPUT_DIR, batch_num)
-            with open(OUTPUT_DIR / "weibos_all.json", "w", encoding="utf-8") as f:
+            weibos_all_path = OUTPUT_DIR / "weibos_all.json"
+            with open(weibos_all_path, "w", encoding="utf-8") as f:
                 json.dump(all_weibos, f, ensure_ascii=False, indent=2)
+
+            # 中断时也尝试提取内容
+            try:
+                logger.info("📝 正在提取已爬取微博的内容...")
+                weibos_content_path = OUTPUT_DIR / "weibos_content.txt"
+                extract_content(str(weibos_all_path), str(weibos_content_path))
+                logger.info(f"✅ 内容提取完成，纯文本文件已保存到: {weibos_content_path}")
+            except Exception as e:
+                logger.warning(f"⚠️  内容提取失败，不影响爬取结果: {str(e)}")
             logger.info(f"✅ 进度已完整保存到：{OUTPUT_DIR}")
             logger.info("💡 下次运行时加上 --resume 参数即可从中断处继续爬取，无需重复爬取")
         except Exception as e:

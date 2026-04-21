@@ -7,12 +7,14 @@ import os
 import json
 import argparse
 import requests
+import time
 from pathlib import Path
 from extract_content import extract_content
 
 # 默认配置
 DEFAULT_API_BASE = "https://ark.cn-beijing.volces.com/api/v3/responses"
 DEFAULT_MODEL = "doubao-seed-2-0-mini-260215"
+DEFAULT_MODEL = "doubao-seed-2-0-lite-260215"
 DEFAULT_TEMPERATURE = 0.7
 MAX_CONTEXT_TOKENS = 120000  # 留出部分token给对话和响应
 
@@ -57,8 +59,8 @@ def load_weibo_content(crawl_dir):
 
     return full_content
 
-def call_ark_api(api_key, messages, model=DEFAULT_MODEL, temperature=DEFAULT_TEMPERATURE):
-    """调用豆包API"""
+def call_ark_api(api_key, messages, model=DEFAULT_MODEL, temperature=DEFAULT_TEMPERATURE, max_retries=2, retry_delay=3):
+    """调用豆包API，支持失败重试"""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
@@ -83,31 +85,50 @@ def call_ark_api(api_key, messages, model=DEFAULT_MODEL, temperature=DEFAULT_TEM
         "temperature": temperature
     }
 
-    try:
-        response = requests.post(
-            DEFAULT_API_BASE,
-            headers=headers,
-            json=data,
-            timeout=60
-        )
-        response.raise_for_status()
-        result = response.json()
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.post(
+                DEFAULT_API_BASE,
+                headers=headers,
+                json=data,
+                timeout=60
+            )
 
-        # 解析响应
-        if result.get("status") == "completed":
-            # 查找type为message的输出项
-            for output_item in result.get("output", []):
-                if output_item.get("type") == "message":
-                    return output_item["content"][0]["text"]
-            # 如果没找到，返回第一个输出的内容
-            return result["output"][0]["content"][0]["text"]
-        else:
-            error_msg = result.get("error", {}).get("message", "未知错误")
-            print(f"❌ API调用失败: {error_msg}")
-            return None
-    except Exception as e:
-        print(f"❌ 请求API时出错: {str(e)}")
-        return None
+            # 处理可重试的HTTP错误
+            if response.status_code >= 500 or response.status_code == 429:
+                if attempt < max_retries:
+                    print(f"⚠️  请求失败 (状态码: {response.status_code})，正在进行第{attempt + 1}次重试...")
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    error_msg = f"API返回错误状态码: {response.status_code}"
+                    print(f"❌ {error_msg}，已达到最大重试次数")
+                    return None
+
+            response.raise_for_status()
+            result = response.json()
+
+            # 解析响应
+            if result.get("status") == "completed":
+                # 查找type为message的输出项
+                for output_item in result.get("output", []):
+                    if output_item.get("type") == "message":
+                        return output_item["content"][0]["text"]
+                # 如果没找到，返回第一个输出的内容
+                return result["output"][0]["content"][0]["text"]
+            else:
+                error_msg = result.get("error", {}).get("message", "未知错误")
+                print(f"❌ API调用失败: {error_msg}")
+                return None
+
+        except requests.exceptions.RequestException as e:
+            # 网络错误、超时等请求异常
+            if attempt < max_retries:
+                print(f"⚠️  请求异常: {str(e)}，正在进行第{attempt + 1}次重试...")
+                time.sleep(retry_delay)
+            else:
+                print(f"❌ 请求失败: {str(e)}，已达到最大重试次数")
+                return None
 
 def main():
     parser = argparse.ArgumentParser(description='基于微博内容的交互式聊天工具')
