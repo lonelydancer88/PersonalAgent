@@ -97,8 +97,32 @@ def clean_username(username):
     # 截取前20个字符，避免目录名太长
     return username.strip('_')[:20] or "未知用户"
 
+def handle_visitor_verification(page):
+    """自动处理新浪游客验证，等待验证通过拿到有效Cookie，适配长等待时间"""
+    try:
+        # 先访问任意公开页面触发游客验证
+        page.goto("https://m.weibo.cn/p/index", timeout=60000)
+        page.wait_for_load_state("networkidle", timeout=20000)
+
+        # 检测是否跳了游客系统
+        if "visitor.passport.weibo.cn" in page.url:
+            print("🤖 检测到新浪游客验证，正在自动处理（需要10-15秒）...")
+            # 等待验证自动完成，跳回微博页面，最多等60秒
+            page.wait_for_url("https://m.weibo.cn/**", timeout=60000)
+            # 跳转后等待页面完全加载渲染
+            page.wait_for_load_state("networkidle", timeout=20000)
+            time.sleep(5)
+            print("✅ 游客验证通过，获得访问权限")
+        else:
+            # 已经在微博页面，无需验证
+            time.sleep(2)
+        return True
+    except Exception as e:
+        print(f"⚠️ 游客验证处理失败: {str(e)}")
+        return False
+
 def get_username(uid):
-    """访问用户主页获取用户名，用于目录命名"""
+    """访问用户主页获取用户名，自动过游客验证"""
     from playwright.sync_api import sync_playwright
     try:
         with sync_playwright() as p:
@@ -109,22 +133,49 @@ def get_username(uid):
                 is_mobile=True
             )
             page = context.new_page()
-            page.goto(f"https://m.weibo.cn/u/{uid}", timeout=30000)
-            page.wait_for_load_state("networkidle")
-            time.sleep(2)
+
+            # 先处理游客验证
+            if not handle_visitor_verification(page):
+                browser.close()
+                return ""
+
+            # 验证通过后访问用户主页
+            page.goto(f"https://m.weibo.cn/u/{uid}", timeout=60000)
+            page.wait_for_load_state("networkidle", timeout=30000)
+            time.sleep(10)  # 给足够时间渲染用户信息，和测试版保持一致
+
             # 关闭弹窗
             try:
-                page.click(".m-img-box-close", timeout=1000)
+                page.click(".m-img-box-close", timeout=2000)
+                time.sleep(1)
             except:
                 pass
-            # 获取用户名
+
+            # 优先用已知正确的选择器提取
             username = ""
-            if page.query_selector(".name", timeout=2000):
-                username = page.text_content(".name", timeout=2000).strip()
+            try:
+                username = page.text_content(".mod-fil-name", timeout=5000).strip()
+            except:
+                # 备选选择器
+                try:
+                    username = page.text_content(".name.m-text-cut", timeout=3000).strip()
+                except:
+                    # 最后从标题提取
+                    try:
+                        title = page.title()
+                        if "的微博" in title:
+                            username = title.split("的微博")[0].strip()
+                    except:
+                        pass
+
+            # 过滤无效值
+            if not username or len(username) > 50 or "微博" in username:
+                username = ""
+
             browser.close()
             return username
     except Exception as e:
-        print(f"⚠️ 获取用户名失败，使用默认值: {e}")
+        print(f"⚠️ 获取用户名失败，使用默认值: {str(e)}")
         return ""
 
 def get_full_content(page, weibo_id):
@@ -221,10 +272,14 @@ def main():
         page = context.new_page()
 
         try:
+            # 先处理游客验证，拿到访问权限
+            print("🔑 正在处理游客验证...")
+            handle_visitor_verification(page)
+
             print("🌐 访问用户主页...")
             page.goto(TARGET_USER_URL, timeout=60000)
-            page.wait_for_load_state("networkidle")
-            time.sleep(5)
+            page.wait_for_load_state("networkidle", timeout=30000)
+            time.sleep(4)  # 适配慢网络
 
             # 关闭弹窗
             try:
@@ -237,12 +292,16 @@ def main():
             user_name = "未知用户"
             user_desc = ""
             try:
-                if page.query_selector(".name", timeout=2000):
-                    user_name = page.text_content(".name")
-                if page.query_selector(".desc", timeout=2000):
-                    user_desc = page.text_content(".desc")
-            except:
-                pass
+                # 优先用新版选择器
+                if page.query_selector(".mod-fil-name", timeout=3000):
+                    user_name = page.text_content(".mod-fil-name").strip()
+                elif page.query_selector(".name", timeout=2000):
+                    user_name = page.text_content(".name").strip()
+                # 提取简介
+                if page.query_selector(".mod-fil-desc, .desc", timeout=2000):
+                    user_desc = page.text_content(".mod-fil-desc, .desc").strip()
+            except Exception as e:
+                logger.debug(f"提取用户信息失败: {str(e)}")
             logger.info(f"👤 爬取用户: {user_name} (ID: {TARGET_USER_ID})")
             logger.info(f"📝 用户简介: {user_desc[:100]}..." if len(user_desc) > 100 else f"📝 用户简介: {user_desc}")
 
@@ -262,8 +321,8 @@ def main():
 
             while empty_scroll_count < MAX_EMPTY_SCROLL and no_new_count < MAX_EMPTY_SCROLL:
                 scroll_count += 1
-                # 只选择有内容的有效卡片
-                weibo_cards = page.query_selector_all("div.card.m-panel.card9:has(.weibo-text)")
+                # 只选择有内容的有效微博卡片，适配新版页面class
+                weibo_cards = page.query_selector_all("div.card, div.m-panel, div[class*='card9']:has(.weibo-text), div.weibo-card:has(.weibo-text)")
                 logger.info(f"[滚动第{scroll_count}次] 📄 当前有效卡片数: {len(weibo_cards)} | 累计已爬原创微博: {len(all_weibos)} 条")
 
                 if not weibo_cards:
