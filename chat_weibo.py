@@ -80,9 +80,7 @@ def call_ark_api(api_key, messages, model=DEFAULT_MODEL, temperature=DEFAULT_TEM
     data = {
         "model": model,
         "input": input_messages,
-        "parameters": {
-            "temperature": temperature
-        }
+        "temperature": temperature
     }
 
     try:
@@ -96,8 +94,13 @@ def call_ark_api(api_key, messages, model=DEFAULT_MODEL, temperature=DEFAULT_TEM
         result = response.json()
 
         # 解析响应
-        if result.get("status") == "success":
-            return result["choices"][0]["message"]["content"][0]["text"]
+        if result.get("status") == "completed":
+            # 查找type为message的输出项
+            for output_item in result.get("output", []):
+                if output_item.get("type") == "message":
+                    return output_item["content"][0]["text"]
+            # 如果没找到，返回第一个输出的内容
+            return result["output"][0]["content"][0]["text"]
         else:
             error_msg = result.get("error", {}).get("message", "未知错误")
             print(f"❌ API调用失败: {error_msg}")
@@ -117,7 +120,7 @@ def main():
     api_key = os.getenv("ARK_API_KEY")
     if not api_key:
         print("❌ 请先设置 ARK_API_KEY 环境变量：")
-        print("   export ARK_API_KEY=\"ark-7fc4057e-e7eb-4d74-9b7a-fcfb1276c4b2-b92ef\"")
+        print("   export ARK_API_KEY=\"your-ark-api-key-here\"")
         return
 
     # 加载微博内容
