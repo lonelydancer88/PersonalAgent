@@ -33,6 +33,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from playwright.sync_api import sync_playwright
+from extract_content import extract_content
 
 def get_content_hash(content):
     """内容哈希当备用ID"""
@@ -473,8 +474,21 @@ def main():
 
             # 保存最终全量文件
             logger.info("💾 正在保存最终全量汇总文件...")
-            with open(OUTPUT_DIR / "weibos_all.json", "w", encoding="utf-8") as f:
+            weibos_all_path = OUTPUT_DIR / "weibos_all.json"
+            with open(weibos_all_path, "w", encoding="utf-8") as f:
                 json.dump(all_weibos, f, ensure_ascii=False, indent=2)
+
+            # 自动提取纯文本内容
+            logger.info("📝 正在自动提取微博纯文本内容...")
+            try:
+                content_output_path = OUTPUT_DIR / "weibos_content.txt"
+                extract_success = extract_content(str(weibos_all_path), str(content_output_path))
+                if extract_success:
+                    logger.info("✅ 纯文本内容提取完成，已保存到 weibos_content.txt")
+                else:
+                    logger.warning("⚠️  纯文本内容提取失败，可手动运行 extract_content.py 提取")
+            except Exception as e:
+                logger.warning(f"⚠️  自动提取内容时出错: {str(e)}，可手动运行 extract_content.py 提取")
 
             # 保存完成标记
             with open(OUTPUT_DIR / "crawl_complete.json", "w", encoding="utf-8") as f:
